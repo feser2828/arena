@@ -321,3 +321,80 @@ export async function autosellCommand(uid: number, arg: string): Promise<string>
     "A rule runs once, after the market cap holds above the target for two checks, then is removed.",
   ].filter((l, i) => l !== "" || i > 0).join("\n");
 }
+
+// ---------- last trades ----------
+function parseTrades(logs: any[]): Trade[] {
+  const out: Trade[] = [];
+  for (const l of logs) {
+    const { from: a, to: b, value } = l.args ?? {};
+    if (!a || !b || !value || !l.transactionHash) continue;
+    const whole = (value as bigint) / 10n ** 18n;
+    if (whole === 0n) continue;
+    const tokens = Number(formatUnits(value, 18));
+    if (a.toLowerCase() === ZERO && !SKIP_MINT_TO.has(b.toLowerCase())) {
+      out.push({ side: "buy", trader: b, tokens, whole, hash: l.transactionHash, block: l.blockNumber });
+    } else if (b.toLowerCase() === ZERO) {
+      out.push({ side: "sell", trader: a, tokens, whole, hash: l.transactionHash, block: l.blockNumber });
+    }
+  }
+  return out;
+}
+
+const ago = (secs: number) => {
+  if (secs < 90) return `${Math.max(1, Math.round(secs))}s ago`;
+  if (secs < 5400) return `${Math.round(secs / 60)}m ago`;
+  if (secs < 129600) return `${Math.round(secs / 3600)}h ago`;
+  return `${Math.round(secs / 86400)}d ago`;
+};
+
+export async function tradesCommand(uid: number, count = 5): Promise<string> {
+  try {
+    const [snap, sym, head] = await Promise.all([snapshot(), symbol(), pub.getBlockNumber()]);
+    const STEP = 2000n;
+    const MAX_STEPS = 60; // about 66 hours of blocks
+    const found: Trade[] = [];
+    let to = head;
+    for (let i = 0; i < MAX_STEPS && found.length < count && to > 0n; i++) {
+      const from = to >= STEP ? to - STEP + 1n : 0n;
+      const logs = await pub.getLogs({ address: config.token, event: transferEvent, fromBlock: from, toBlock: to });
+      found.push(...parseTrades(logs as any[]).reverse()); // newest first
+      to = from - 1n;
+    }
+    const trades = found.slice(0, count);
+    if (trades.length === 0) return `No trades found in the last ${Math.round(MAX_STEPS * 2000 * 2 / 3600)} hours.`;
+
+    const mineAddrs = new Map(listWallets(uid).map((w) => [w.address.toLowerCase(), w.label]));
+    const now = Date.now() / 1000;
+    const lines = [
+      `Last ${trades.length} trades  ${sym}`,
+      `Price ${usd(snap.priceUsd)}   Market cap ${big(snap.mcUsd)}`,
+      "",
+    ];
+    for (const t of trades) {
+      let avax = t.tokens * snap.priceAvax;
+      let exact = false;
+      try {
+        const v = await pub.readContract({
+          address: config.launch, abi, functionName: "calculateCost", args: [t.whole, config.tokenId],
+          blockNumber: t.side === "buy" ? t.block - 1n : t.block,
+        });
+        avax = Number(formatUnits(v, 18));
+        exact = true;
+      } catch {}
+      const blk = await pub.getBlock({ blockNumber: t.block }).catch(() => null);
+      const when = blk ? ago(now - Number(blk.timestamp)) : "";
+      const who = mineAddrs.get(t.trader.toLowerCase());
+      lines.push(
+        `${t.side === "buy" ? "BUY " : "SELL"}  ${exact ? "" : "~"}${usd(avax * snap.ux)}  (${avax.toFixed(3)} AVAX)  ${num(t.tokens)} ${sym}`,
+        `      ${who ? `${who} (yours)` : short(t.trader)}  ${when}`.trimEnd(),
+        `      https://snowtrace.io/tx/${t.hash}`,
+        "",
+      );
+    }
+    if (lines.some((l) => l.includes("~$"))) lines.push("~ estimated at the current price, older trades cannot be priced exactly.");
+    return lines.join("\n").trimEnd();
+  } catch (e) {
+    console.error("trades", e);
+    return "Could not load trades right now. Try again in a moment.";
+  }
+}
