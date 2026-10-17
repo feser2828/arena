@@ -4,7 +4,7 @@ import { buyAll, sellAll, approveAll, statusAll, type Result } from "./trade.js"
 import { createWallet, importWallet, listWallets, exportKey, removeWallet, walletSource } from "./db.js";
 import { portfolioAll, walletSummary } from "./portfolio.js";
 import { parseAmount, previewOrder, runOrder, type Order } from "./plan.js";
-import { startAlerts, alertsCommand, alertCommand, autosellCommand } from "./alerts.js";
+import { startAlerts, alertsCommand, alertCommand, autosellCommand, tradesCommand } from "./alerts.js";
 
 const pendingImport = new Set<number>();
 
@@ -25,7 +25,7 @@ const menu = new InlineKeyboard()
     .text("Sell 25%", "sq:25%").text("Sell 50%", "sq:50%").text("Sell 100%", "sq:100%").row()
   .text("Sell custom amount", "sq:custom").row()
     .text("Status", "status").text("Wallets", "wallets").row()
-  .text("Alerts", "alerts").text("Auto-sell", "autosell");
+  .text("Alerts", "alerts").text("Auto-sell", "autosell").text("Trades", "trades");
 
 bot.command("start", (ctx) =>
   ctx.reply("Tap Wallets to create a new wallet or import one you already own, then use the buttons below to trade.", { reply_markup: menu }));
@@ -75,6 +75,15 @@ bot.command("export", async (ctx) => {
 });
 bot.command("status", async (ctx) => doStatus(ctx));
 bot.command("alerts", async (ctx) => ctx.reply(alertsCommand(ctx.from!.id, ctx.match.trim())));
+bot.command("trades", async (ctx) => {
+  await ctx.api.sendChatAction(ctx.chat.id, "typing").catch(() => {});
+  await ctx.reply(await tradesCommand(ctx.from!.id), { link_preview_options: { is_disabled: true } });
+});
+bot.callbackQuery("trades", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  await ctx.api.sendChatAction(ctx.from.id, "typing").catch(() => {});
+  await ctx.reply(await tradesCommand(ctx.from.id), { link_preview_options: { is_disabled: true } });
+});
 bot.command("alert", async (ctx) => ctx.reply(alertCommand(ctx.from!.id, ctx.match.trim())));
 bot.command("autosell", async (ctx) => ctx.reply(await autosellCommand(ctx.from!.id, ctx.match.trim())));
 bot.callbackQuery("alerts", async (ctx) => { await ctx.answerCallbackQuery(); await ctx.reply(alertsCommand(ctx.from.id, "")); });
@@ -251,6 +260,7 @@ bot.api.setMyCommands([
     { command: "buy", description: "Buy in dollars, e.g. /buy 25" },
     { command: "sell", description: "Sell, e.g. /sell 25 or /sell 50%" },
   { command: "alerts", description: "Trade alerts on or off" },
+  { command: "trades", description: "Last 5 trades" },
   { command: "alert", description: "Alert rule, e.g. /alert buy > 50" },
   { command: "autosell", description: "Sell at a market cap, e.g. /autosell 1m" },
 ]).catch(() => {});
